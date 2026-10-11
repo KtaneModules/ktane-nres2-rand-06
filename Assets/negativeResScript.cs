@@ -5,9 +5,6 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using KeepCoding;
 using UnityEngine;
-using static negativeResSpace.NegativeResistanceExt;
-
-
 
 public class negativeResScript : MonoBehaviour
 {
@@ -19,7 +16,7 @@ public class negativeResScript : MonoBehaviour
     public KMAudio Audio;
     public List<AudioClip> sounds;
     private bool TwitchPlaysActive;
-    
+    private bool ZenModeActive;
     static int ModuleIdCounter;
     int ModuleId;
     private bool secondStage;
@@ -38,6 +35,11 @@ public class negativeResScript : MonoBehaviour
     private readonly string axisNames = "XYZWVURSTOPQLMNIJK"; //i'm actually making nres for higher dimensions ho lee sheet
     private List<List<int>> currentAnswer = new List<List<int>>{new List<int>()};
     private bool lockInput;
+    private bool setupMode;                       // Twitch Plays: waiting for the setup commands and "activate"
+    private bool modulePrepared;                  // spheres exist and the module is in the normal Read/Submit cycle
+    private int startDimensions;                  // amountOfDimensions at the start (unnerfed mode lowers amountOfDimensions)
+    private const int BasePoints = 17;            // points that Twitch Plays gives for the module anyway
+    private static readonly int[] dimPoints = { 0, 0, 0, 13, 22, 28, 35, 50, 65, 80, 110, 130, 225, 290, 355, 420, 470, 535, 600 };
 
     private int amountOfDimensions;
     private int amountOfSubrotations = 1;
@@ -80,8 +82,6 @@ public class negativeResScript : MonoBehaviour
 
     public AudioClip we_are_fucked;
 
-    public int currentRotation;
-
     void resetAnswer(){
         currentAnswer = new List<List<int>>{ new List<int>() };   // always at least one (in-progress) list
     }
@@ -111,6 +111,7 @@ public class negativeResScript : MonoBehaviour
         {
             spheres[i].GetComponent<MeshRenderer>().material.color = colors[i];
         }
+        modulePrepared = true;
         StartCoroutine(move());
     }
 
@@ -338,7 +339,7 @@ public class negativeResScript : MonoBehaviour
     }
 
     void updateSelectableChildren(){
-        GetComponent<KMSelectable>().Children = spheres.Select(i=>i.GetComponent<KMSelectable>()).Concat(sphere.GetComponent<KMSelectable>()).ToList();
+        GetComponent<KMSelectable>().Children = spheres.Select(i=>i.GetComponent<KMSelectable>()).Concat(sphere.GetComponent<KMSelectable>()).ToArray();
         GetComponent<KMSelectable>().UpdateChildrenProperly();
     }
 
@@ -442,6 +443,7 @@ public class negativeResScript : MonoBehaviour
     }
 
     void appendAnswer(int button){
+        if (!secondStage) return;
         if (!currentAnswer.Last().Any()) {
             if (currentAnswer.Count > 1){
                 List<List<int>> confirmed = currentAnswer.SkipLast(1).ToList();
@@ -507,13 +509,24 @@ public class negativeResScript : MonoBehaviour
             ? 1
             : Settings.amountOfRotations;
         unnerfedMode = Settings.unnerfedMode;
+        spheres = new List<GameObject>();      // filled in startNormally() / activateFromSetup()
+        // Twitch Plays sets TwitchPlaysActive after Awake, so the decision is made when the bomb activates
+        Module.OnActivate += OnModuleActivate;
+    }
+
+    void OnModuleActivate(){
+        if (TwitchPlaysActive) enterSetupMode();
+        else startNormally();
+    }
+
+    // the usual start: below 12 dimensions the spheres appear at once, from 12 on the module waits for a click
+    void startNormally(){
+        startDimensions = amountOfDimensions;
         recalculateGeometry();
-        
-        
         if (amountOfDimensions<12)
         {
             spheres = Enumerable.Range(0, 1 << amountOfDimensions).Select(x => Instantiate(sphere,sphereParent)).ToList();
-            GetComponent<KMSelectable>().Children = spheres.Select(i=>i.GetComponent<KMSelectable>()).Concat(sphere.GetComponent<KMSelectable>()).ToList();
+            GetComponent<KMSelectable>().Children = spheres.Select(i=>i.GetComponent<KMSelectable>()).Concat(sphere.GetComponent<KMSelectable>()).ToArray();
             GetComponent<KMSelectable>().UpdateChildrenProperly();
             for (int i = 0; i < 1 << amountOfDimensions; i++)
             {
@@ -530,20 +543,73 @@ public class negativeResScript : MonoBehaviour
         }
         else
         {
-            spheres = new List<GameObject>();      // filled gradually by generateSpheres()
             Center.text = "?";
             sphere.transform.localPosition = new Vector3(.5f,0f,.5f);
             GetComponent<KMSelectable>().OnInteract += delegate
             {
                 if (activatedOnce) return true;
-                activatedOnce = true;
-                Center.text = amountOfDimensions.ToString();
-                Audio.PlaySoundAtTransform(we_are_fucked.name, transform);
-                StartCoroutine(generateSpheres());
-                StartCoroutine(getReadyForTorture());
+                beginGeneration(true);
                 return true;
             };
         }
+    }
+
+    // generates the spheres gradually and flies them out of the center; the transformations start after that
+    void beginGeneration(bool playSound){
+        activatedOnce = true;
+        Center.text = amountOfDimensions.ToString();
+        if (playSound) Audio.PlaySoundAtTransform(we_are_fucked.name, transform);
+        StartCoroutine(generateSpheres());
+        StartCoroutine(getReadyForTorture());
+    }
+
+    // Twitch Plays: no spheres yet, the module can be configured with commands
+    void enterSetupMode(){
+        setupMode = true;
+        Center.text = "Setup";
+        sphere.transform.localPosition = new Vector3(.5f,0f,.5f);
+        Debug.LogFormat("[Negative-Resistance #{0}] Twitch Plays setup is available. {1}", ModuleId, configSummary());
+    }
+
+    // Twitch Plays: "activate" ends the setup; the sound is played only for 12+ dimensions
+    void activateFromSetup(){
+        setupMode = false;
+        startDimensions = amountOfDimensions;
+        recalculateGeometry();
+        Debug.LogFormat("[Negative-Resistance #{0}] Activated from the setup. {1}", ModuleId, configSummary());
+        beginGeneration(amountOfDimensions >= 12);
+    }
+
+    string configSummary(){
+        string unnerfed = unnerfedMode ? "on" : "off";
+        return "Dimensions: " + amountOfDimensions + ", subtransformations: " + amountOfSubrotations
+            + ", transformations: " + amountOfRotations + ", unnerfed mode: " + unnerfed
+            + ". Reward: " + totalPoints(amountOfDimensions) + " points.";
+    }
+
+    // points for one cube of the given dimension
+    int pointsForCube(int dimensions){
+        return (int)Math.Floor(dimPoints[dimensions] * ((1 / 4f) + (amountOfRotations / 4f)));
+    }
+
+    // unnerfed mode adds the points of every cube from the start dimension down to 3
+    int totalPoints(int dimensions){
+        if (!unnerfedMode) return pointsForCube(dimensions);
+        int sum = 0;
+        for (int d = 3; d <= dimensions; d++) sum += pointsForCube(d);
+        return sum;
+    }
+
+    // the click on `button` would be the "submit" gesture (a used vertex that is not the start of a subtransformation)
+    bool isSubmitGesture(int button){
+        if (!secondStage || currentAnswer.Count < 2 || currentAnswer.Last().Count != 0) return false;
+        List<List<int>> confirmed = currentAnswer.SkipLast(1).ToList();
+        return confirmed.SelectMany(x => x).Contains(button) && !confirmed.Any(l => l.First() == button);
+    }
+
+    // the click on `button` would solve the module (right answer for the last transformation of the last cube)
+    bool willSolveWith(int button){
+        return isSubmitGesture(button) && stage == configs.Count - 1 && !(unnerfedMode && amountOfDimensions > 3) && checkAnswer();
     }
 
     // creates the spheres gradually: at most GenerationBudgetMs per frame, so the game does not freeze
@@ -668,12 +734,84 @@ public class negativeResScript : MonoBehaviour
     
     
 #pragma warning disable 414
-    private readonly string TwitchHelpMessage = @"Use !{0} -/+ to press orb on certain axis. For example !{0} ---+++ presses -X-Y-Z+W+V+U. You can chain coordinates with spaces.";
+    private readonly string TwitchHelpMessage = @"Before activation: !{0} dimensions 8 / subtransformations 2 / transformations 3 / unnerfed on|off|toggle / config / activate. After activation: use !{0} -/+ to press orb on certain axis. For example !{0} ---+++ presses -X-Y-Z+W+V+U. You can chain coordinates with spaces.";
 #pragma warning restore 414
 
     IEnumerator ProcessTwitchCommand(string Command)
     {
         yield return null;
+        if (setupMode)
+        {
+            string[] parts = Command.Trim().ToLowerInvariant().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            string name = parts.Length > 0 ? parts[0] : "";
+            string arg = parts.Length > 1 ? parts[1] : null;
+            int value;
+            int minDimensions = ZenModeActive ? 3 : 6;
+            if (parts.Length > 2)
+            {
+                yield return "sendtochaterror Too many arguments.";
+                yield break;
+            }
+            switch (name)
+            {
+                case "dimensions": case "dimension": case "dims": case "dim": case "d":
+                    if (!int.TryParse(arg ?? "", out value) || value < minDimensions || value > axisNames.Length)
+                    {
+                        yield return "sendtochaterror The amount of dimensions must be between " + minDimensions + " and " + axisNames.Length + ".";
+                        yield break;
+                    }
+                    amountOfDimensions = value;
+                    break;
+                case "subtransformations": case "subtransformation": case "subrotations": case "subrotation": case "sub": case "s":
+                    if (!int.TryParse(arg ?? "", out value) || value < 1 || value > axisNames.Length)
+                    {
+                        yield return "sendtochaterror The amount of subtransformations must be between 1 and " + axisNames.Length + ".";
+                        yield break;
+                    }
+                    amountOfSubrotations = value;
+                    break;
+                case "transformations": case "transformation": case "rotations": case "rotation": case "trans": case "rot": case "t": case "r":
+                    if (!int.TryParse(arg ?? "", out value) || value < 1 || value > MaxRotations)
+                    {
+                        yield return "sendtochaterror The amount of transformations must be between 1 and " + MaxRotations + ".";
+                        yield break;
+                    }
+                    amountOfRotations = value;
+                    break;
+                case "unnerfed": case "unnerf": case "u":
+                    if (arg == null || arg == "toggle") unnerfedMode = !unnerfedMode;
+                    else if (arg == "on" || arg == "true") unnerfedMode = true;
+                    else if (arg == "off" || arg == "false") unnerfedMode = false;
+                    else
+                    {
+                        yield return "sendtochaterror Use unnerfed on, unnerfed off or unnerfed toggle.";
+                        yield break;
+                    }
+                    break;
+                case "config": case "status": case "info":
+                    break;      // only shows the current configuration
+                case "activate":
+                    if (parts.Length != 1)
+                    {
+                        yield return "sendtochaterror Activate takes no arguments.";
+                        yield break;
+                    }
+                    activateFromSetup();
+                    yield return "sendtochat Activated. " + configSummary();
+                    while (!modulePrepared) yield return new WaitForSeconds(.3f);
+                    yield break;
+                default:
+                    yield return "sendtochaterror Unknown setup command. Use dimensions, subtransformations, transformations, unnerfed, config or activate.";
+                    yield break;
+            }
+            yield return "sendtochat " + configSummary();
+            yield break;
+        }
+        if (!modulePrepared)
+        {
+            yield return "sendtochaterror The module is not ready yet.";
+            yield break;
+        }
         if (!Command.RegexMatch("^(([-+]{"+amountOfDimensions+"})( |$))+"))
         {
             yield return "sendtochaterror Error";
@@ -683,10 +821,21 @@ public class negativeResScript : MonoBehaviour
             foreach (var point in Command.Split(' '))
             {
                 while (lockInput) yield return new WaitForSeconds(.3f);
+                if (!secondStage)
+                {
+                    // same as the first click on any orb: the animation finishes, the orbs fade to gray, then the input opens
+                    press(0);
+                    while (lockInput) yield return new WaitForSeconds(.3f);
+                }
                 int x = 0;
                 for (int i = 0; i < amountOfDimensions; i++) if (point[i] == '+') x += 1 << i;
                 yield return "solve";
                 yield return "strike";
+                if (willSolveWith(x))
+                {
+                    yield return $"sendtochat Module solves: rewarding {totalPoints(startDimensions) - BasePoints} extra points.";
+                    yield return $"awardpointsonsolve {totalPoints(startDimensions) - BasePoints}";
+                }
                 appendAnswer(x);
             }
             yield return new WaitForSeconds(.5f);
@@ -758,6 +907,12 @@ public class negativeResScript : MonoBehaviour
     IEnumerator TwitchHandleForcedSolve()
     {
         yield return null;
+        if (!modulePrepared)
+        {
+            if (setupMode) activateFromSetup();
+            else if (!activatedOnce && amountOfDimensions >= 12) beginGeneration(true);
+            while (!modulePrepared) yield return new WaitForSeconds(.3f);
+        }
         while (true)
         {
             if (!secondStage) spheres[0].GetComponent<KMSelectable>().OnInteract();
