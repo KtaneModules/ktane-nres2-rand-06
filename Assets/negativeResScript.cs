@@ -812,7 +812,7 @@ public class negativeResScript : MonoBehaviour
             yield return "sendtochaterror The module is not ready yet.";
             yield break;
         }
-        if (!Command.RegexMatch("^(([-+]{"+amountOfDimensions+"})( |$))+"))
+        if (!Command.RegexMatch("^(([-+]{"+amountOfDimensions+"})( +|$))+"))
         {
             yield return "sendtochaterror Error";
         }
