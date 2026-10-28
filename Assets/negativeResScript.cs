@@ -818,7 +818,7 @@ public class negativeResScript : MonoBehaviour
         }
         else
         {
-            foreach (var point in Command.Split(' '))
+            foreach (var point in Command.Split(' ').ToList().Where(x=>x!="").ToList())
             {
                 while (lockInput) yield return new WaitForSeconds(.3f);
                 if (!secondStage)
